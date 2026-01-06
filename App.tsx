@@ -32,6 +32,7 @@ const App: React.FC = () => {
       const unsubscribe = db.subscribe((newState) => {
         setState(newState);
         setIsCloudConnected(db.getStatus());
+        setHasKeys(db.hasCredentials());
       });
 
       return unsubscribe;
@@ -66,14 +67,14 @@ const App: React.FC = () => {
 
   const renderView = () => {
     switch (activeView) {
-      case 'dashboard': return <Dashboard state={state} />;
+      case 'dashboard': return <Dashboard state={state} onNavigate={setActiveView} />;
       case 'tasks': return <TaskList state={state} />;
       case 'kanban': return <KanbanBoard state={state} />;
       case 'grants': return <GrantsView state={state} />;
       case 'team': return <TeamView state={state} />;
       case 'docs': return <DocsViewer />;
       case 'settings': return <SettingsView state={state} />;
-      default: return <Dashboard state={state} />;
+      default: return <Dashboard state={state} onNavigate={setActiveView} />;
     }
   };
 

@@ -5,22 +5,30 @@ import {
   PieChart, Pie, Cell, Legend 
 } from 'recharts';
 import { Task, AppState, TaskStatus } from '../types';
+import { db } from '../services/database';
 import { analyzeProjectHealth } from '../services/geminiService';
-import { Sparkles, Activity, Clock, CheckCircle2 } from 'lucide-react';
+import { Sparkles, Activity, Clock, CheckCircle2, AlertTriangle, ArrowRight } from 'lucide-react';
 
 interface DashboardProps {
   state: AppState;
+  onNavigate?: (view: string) => void;
 }
 
-const Dashboard: React.FC<DashboardProps> = ({ state }) => {
+const Dashboard: React.FC<DashboardProps> = ({ state, onNavigate }) => {
   const [aiReport, setAiReport] = useState<string | null>(null);
   const [loadingAi, setLoadingAi] = useState(false);
   const [mounted, setMounted] = useState(false);
+  const [isOffline, setIsOffline] = useState(!db.getStatus());
 
   useEffect(() => {
-    // Delay setting mounted for 100ms to ensure container has calculated its width
     const timer = setTimeout(() => setMounted(true), 100);
-    return () => clearTimeout(timer);
+    const unsubscribe = db.subscribe(() => {
+      setIsOffline(!db.getStatus());
+    });
+    return () => {
+      clearTimeout(timer);
+      unsubscribe();
+    };
   }, []);
 
   const statusData = [
@@ -48,6 +56,28 @@ const Dashboard: React.FC<DashboardProps> = ({ state }) => {
 
   return (
     <div className="space-y-8 animate-in fade-in duration-500">
+      {/* Cloud Connectivity Alert */}
+      {isOffline && (
+        <div className="bg-amber-50 border border-amber-200 rounded-2xl p-5 flex flex-col md:flex-row items-center justify-between gap-4 shadow-sm">
+          <div className="flex items-center gap-4 text-amber-800">
+            <div className="p-3 bg-amber-100 rounded-xl text-amber-600">
+              <AlertTriangle size={24} />
+            </div>
+            <div>
+              <h4 className="font-bold">App is running in Offline/Mock mode</h4>
+              <p className="text-sm opacity-80">Syncing with the BPD Remote Registry requires valid API credentials.</p>
+            </div>
+          </div>
+          <button 
+            onClick={() => onNavigate?.('settings')}
+            className="flex items-center gap-2 bg-amber-600 text-white px-5 py-2.5 rounded-xl font-bold hover:bg-amber-700 transition-all text-sm whitespace-nowrap"
+          >
+            Connect Cloud Database
+            <ArrowRight size={16} />
+          </button>
+        </div>
+      )}
+
       <header className="flex flex-col md:flex-row md:items-end justify-between gap-4">
         <div>
           <h2 className="text-3xl font-bold text-slate-800 tracking-tight">Operational Overview</h2>
@@ -94,10 +124,10 @@ const Dashboard: React.FC<DashboardProps> = ({ state }) => {
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* Charts - Improved with sizing stability */}
+        {/* Charts */}
         <div className="lg:col-span-2 bg-white p-6 rounded-xl border border-slate-200 shadow-sm min-h-[400px] flex flex-col">
           <h3 className="font-bold text-slate-800 mb-6 text-xs uppercase tracking-widest text-center md:text-left">Program Workload</h3>
-          <div className="flex-1 w-full" id="bar-chart-container">
+          <div className="flex-1 w-full">
             {mounted && (
               <ResponsiveContainer width="100%" height={300}>
                 <BarChart data={programData}>
@@ -117,7 +147,7 @@ const Dashboard: React.FC<DashboardProps> = ({ state }) => {
 
         <div className="bg-white p-6 rounded-xl border border-slate-200 shadow-sm min-h-[400px] flex flex-col">
           <h3 className="font-bold text-slate-800 mb-6 text-xs uppercase tracking-widest text-center">Task Status</h3>
-          <div className="flex-1 w-full" id="pie-chart-container">
+          <div className="flex-1 w-full">
             {mounted && (
               <ResponsiveContainer width="100%" height={300}>
                 <PieChart>

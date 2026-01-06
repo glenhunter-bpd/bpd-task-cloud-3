@@ -3,13 +3,19 @@ import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import { Task, Program, User, AppState, TaskStatus } from '../types';
 
 /**
- * BPD CLOUD DATABASE SERVICE V3.4-ULTRA
+ * BPD CLOUD DATABASE SERVICE V3.6-ULTRA
  * 
- * Enhanced with aggressive environment variable scanning and stable connection logic.
+ * Optimized for static deployments. Specifically handles the lack of 
+ * process.env in browser environments by providing a manual bridge.
  */
 
 const getEnv = (key: string): string => {
-  // Check multiple common patterns for client-side environment variables
+  // 1. Check localStorage first (User-provided manual override)
+  const localValue = localStorage.getItem(`BPD_CLOUD_${key}`);
+  if (localValue) return localValue.trim();
+
+  // 2. Check multiple common patterns for client-side environment variables
+  // Vite, Next.js, and standard process.env patterns included
   const variants = [
     key,
     `VITE_${key}`,
@@ -18,23 +24,21 @@ const getEnv = (key: string): string => {
     `PUBLIC_${key}`
   ];
 
+  // Try to find the value in various global env objects
   for (const variant of variants) {
-    // Check process.env
-    if (typeof process !== 'undefined' && process.env && process.env[variant]) {
-      return process.env[variant]!.trim();
-    }
-    // Check import.meta.env (Vite standard)
     // @ts-ignore
-    if (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env[variant]) {
+    if (typeof window !== 'undefined' && window.process?.env?.[variant]) {
+       // @ts-ignore
+      return window.process.env[variant].trim();
+    }
+    // @ts-ignore
+    if (typeof import.meta !== 'undefined' && import.meta.env?.[variant]) {
       // @ts-ignore
       return import.meta.env[variant].trim();
     }
   }
   return '';
 };
-
-const SUPABASE_URL = getEnv('SUPABASE_URL');
-const SUPABASE_KEY = getEnv('SUPABASE_ANON_KEY');
 
 class DatabaseService {
   private client: SupabaseClient | null = null;
@@ -43,18 +47,60 @@ class DatabaseService {
   private localState: AppState = { tasks: [], programs: [], users: [], currentUser: null };
 
   constructor() {
-    if (SUPABASE_URL && SUPABASE_KEY) {
-      console.log("%c BPD Cloud: Found credentials, initializing...", "color: #6366f1; font-weight: bold;");
+    this.reconnect();
+  }
+
+  /**
+   * Attempts to establish a connection to the Supabase Cloud.
+   * Can be called with explicit credentials or will search env/storage.
+   */
+  // Added return type Promise<boolean> to fix type mismatch in initialize()
+  public async reconnect(url?: string, key?: string): Promise<boolean> {
+    const finalUrl = url || getEnv('SUPABASE_URL');
+    const finalKey = key || getEnv('SUPABASE_ANON_KEY');
+
+    if (finalUrl && finalKey) {
+      console.log("%c BPD Cloud: Initiating Handshake...", "color: #6366f1; font-weight: bold;");
       try {
-        this.client = createClient(SUPABASE_URL, SUPABASE_KEY);
-        this.setupRealtimeListeners();
+        this.client = createClient(finalUrl, finalKey);
+        
+        // Immediate test fetch to verify credentials
+        const { error } = await this.client.from('tasks').select('id').limit(1);
+        
+        if (error) {
+           console.error("BPD Cloud: Credential validation failed", error);
+           this.isConnected = false;
+        } else {
+           console.log("%c BPD Cloud: Connection Verified!", "color: #10b981; font-weight: bold;");
+           this.setupRealtimeListeners();
+           await this.syncWithCloud();
+           this.isConnected = true;
+        }
       } catch (e) {
-        console.error("BPD Cloud: Client initialization failed", e);
+        console.error("BPD Cloud: Connection error", e);
+        this.isConnected = false;
       }
     } else {
-      console.warn("%c BPD Cloud: MISSING CREDENTIALS. Check Vercel/Netlify Environment Variables.", "color: #f43f5e; font-weight: bold;");
-      console.info("Looking for: SUPABASE_URL and SUPABASE_ANON_KEY (or VITE_ equivalents)");
+      this.isConnected = false;
+      console.warn("BPD Cloud: Credentials missing. Use Settings to link database.");
     }
+    this.notifySubscribers(this.localState);
+    return this.isConnected;
+  }
+
+  public saveCredentials(url: string, key: string) {
+    localStorage.setItem('BPD_CLOUD_SUPABASE_URL', url);
+    localStorage.setItem('BPD_CLOUD_SUPABASE_ANON_KEY', key);
+    this.reconnect(url, key);
+  }
+
+  public clearCredentials() {
+    localStorage.removeItem('BPD_CLOUD_SUPABASE_URL');
+    localStorage.removeItem('BPD_CLOUD_SUPABASE_ANON_KEY');
+    this.isConnected = false;
+    this.client = null;
+    this.notifySubscribers(this.localState);
+    window.location.reload();
   }
 
   private setupRealtimeListeners() {
@@ -62,12 +108,10 @@ class DatabaseService {
 
     this.client
       .channel('bpd-realtime-global')
-      .on('postgres_changes', { event: '*', schema: 'public' }, (payload) => {
-        console.log('Cloud Sync: Received remote update for', payload.table);
+      .on('postgres_changes', { event: '*', schema: 'public' }, () => {
         this.syncWithCloud();
       })
       .subscribe((status) => {
-        console.log('Cloud Sync: Channel status ->', status);
         if (status === 'SUBSCRIBED') {
           this.isConnected = true;
           this.notifySubscribers({ ...this.localState });
@@ -113,11 +157,11 @@ class DatabaseService {
         users: (usersRes.data || []) as User[],
       };
 
-      this.notifySubscribers(this.localState);
       this.isConnected = true;
+      this.notifySubscribers(this.localState);
       return true;
     } catch (err) {
-      console.error('Cloud Sync Handshake Failed:', err);
+      console.error('Cloud Sync Failed:', err);
       this.isConnected = false;
       this.notifySubscribers({ ...this.localState });
       return false;
@@ -125,25 +169,17 @@ class DatabaseService {
   }
 
   public async initialize(initialData: Partial<AppState>): Promise<boolean> {
-    // Set local state immediately so UI isn't empty while connecting
     this.localState = {
       tasks: initialData.tasks || [],
       programs: initialData.programs || [],
       users: initialData.users || [],
       currentUser: initialData.users ? initialData.users[0] : null
     };
-    this.notifySubscribers(this.localState);
-
-    if (!this.client) return false;
-
-    const success = await this.syncWithCloud();
     
-    if (this.localState.users.length > 0 && !this.localState.currentUser) {
-      this.localState.currentUser = this.localState.users[0];
-      this.notifySubscribers(this.localState);
-    }
-
-    return success;
+    // Fixed: Now reconnect() returns a Promise<boolean>, so cloudSuccess is correctly typed.
+    const cloudSuccess = await this.reconnect();
+    this.notifySubscribers(this.localState);
+    return cloudSuccess;
   }
 
   public subscribe(callback: (state: AppState) => void) {
@@ -203,7 +239,6 @@ class DatabaseService {
     }
   }
 
-  // Added missing updateProgram method
   public async updateProgram(programId: string, updates: Partial<Program>) {
     if (this.client) {
       await this.client.from('programs').update(updates).eq('id', programId);
@@ -211,7 +246,6 @@ class DatabaseService {
     }
   }
 
-  // Added missing deleteProgram method
   public async deleteProgram(programId: string) {
     if (this.client) {
       await this.client.from('programs').delete().eq('id', programId);
@@ -226,7 +260,6 @@ class DatabaseService {
     }
   }
 
-  // Added missing updateUser method
   public async updateUser(userId: string, updates: Partial<User>) {
     if (this.client) {
       await this.client.from('users').update(updates).eq('id', userId);
@@ -234,7 +267,6 @@ class DatabaseService {
     }
   }
 
-  // Added missing deleteUser method
   public async deleteUser(userId: string) {
     if (this.client) {
       await this.client.from('users').delete().eq('id', userId);
@@ -253,7 +285,7 @@ class DatabaseService {
   }
 
   public hasCredentials(): boolean {
-    return !!(SUPABASE_URL && SUPABASE_KEY);
+    return !!(getEnv('SUPABASE_URL') && getEnv('SUPABASE_ANON_KEY'));
   }
 }
 
